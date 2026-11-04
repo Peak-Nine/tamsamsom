@@ -1,7 +1,9 @@
 /**
- * Builds public/app.html from the original tool (tool/market-estimator.html, kept unchanged
- * so it can be swapped for a newer version) plus a few named edits:
- *   - load our runtime before the tool, and the web/sign-out and PDF scripts after it
+ * Builds public/app.html from one of the original tools, kept unchanged in tool/:
+ *   TOOL_VERSION unset or "v1" -> tool/market-estimator.html     (tamsamsom.peaknine.studio)
+ *   TOOL_VERSION "v2"          -> tool/market-estimator-v2.html  (tamsamsom2.onrender.com)
+ * plus a few named edits that fit both versions:
+ *   - load our runtime before the tool, and the web research and PDF scripts after it
  *   - JSZip and pdf.js from this site instead of cdnjs (same versions)
  *   - a "Download a PDF report" card on the Summary page, and its button action
  *   - error messages that pointed people to claude.ai
@@ -12,7 +14,14 @@ const fs = require("fs");
 const path = require("path");
 
 const ROOT = path.join(__dirname, "..");
-const SRC = path.join(ROOT, "tool", "market-estimator.html");
+const TOOLS = { v1: "market-estimator.html", v2: "market-estimator-v2.html" };
+
+/** The tool file for a TOOL_VERSION; an unknown version stops the build. */
+function toolFile(version) {
+  const v = String(version || "v1").trim().toLowerCase();
+  if (!TOOLS[v]) throw new Error(`Unknown TOOL_VERSION "${version}". Use one of: ${Object.keys(TOOLS).join(", ")}.`);
+  return path.join(ROOT, "tool", TOOLS[v]);
+}
 const OUT = path.join(ROOT, "public", "app.html");
 
 const EDITS = [
@@ -39,15 +48,17 @@ const EDITS = [
   },
   {
     name: "PDF card on the Summary page",
-    find: "<p class=\"micro\" style=\"margin:8px 0 0\">With your own workbook, only the M5 tab is written; every other tab stays exactly as it is.</p>\n          ${S.busy.export ? `<p style=\"margin-top:10px\">${busyLine(S.busy.export)}</p>` : ''}\n        </div>",
+    // At the end of the right-hand column, which looks the same in both versions.
+    find: "        </div>\n      </div>\n    </div>\n    <div class=\"section\"><h2 class=\"h\">The computation, block by block</h2>",
     replace:
-      "<p class=\"micro\" style=\"margin:8px 0 0\">With your own workbook, only the M5 tab is written; every other tab stays exactly as it is.</p>\n          ${S.busy.export ? `<p style=\"margin-top:10px\">${busyLine(S.busy.export)}</p>` : ''}\n        </div>\n" +
+      "        </div>\n" +
       "        <div class=\"card\">\n" +
       "          <div class=\"row\" style=\"gap:10px;margin-bottom:6px\">${ico('download', 'lime')}<h3 class=\"h\" style=\"margin:0\">Download a PDF report</h3></div>\n" +
       "          <p class=\"small muted\">A clean report to share: the venture, the results, every building block with its evidence, and the sources.</p>\n" +
       "          <div class=\"row\" style=\"margin-top:8px\"><button class=\"btn ink\" data-act=\"exportpdf\" ${S.busy.pdf ? 'disabled' : ''}>${icon('download')}Download PDF</button></div>\n" +
       "          ${S.busy.pdf ? `<p style=\"margin-top:10px\">${busyLine(S.busy.pdf)}</p>` : ''}\n" +
-      "        </div>",
+      "        </div>\n" +
+      "      </div>\n    </div>\n    <div class=\"section\"><h2 class=\"h\">The computation, block by block</h2>",
   },
   {
     name: "PDF button action",
@@ -101,10 +112,11 @@ function copyVendor() {
 }
 
 if (require.main === module) {
-  const html = applyEdits(fs.readFileSync(SRC, "utf8"));
+  const src = toolFile(process.env.TOOL_VERSION);
+  const html = applyEdits(fs.readFileSync(src, "utf8"));
   fs.writeFileSync(OUT, html);
   copyVendor();
-  console.log(`Built ${path.relative(ROOT, OUT)} (${EDITS.length} edits) and copied jsPDF.`);
+  console.log(`Built ${path.relative(ROOT, OUT)} from ${path.relative(ROOT, src)} (${EDITS.length} edits) and copied jsPDF.`);
 }
 
-module.exports = { applyEdits, EDITS };
+module.exports = { applyEdits, toolFile, EDITS };

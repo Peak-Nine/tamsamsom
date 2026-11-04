@@ -13,6 +13,18 @@ the parts that used to come from Claude:
 | Claude login | None: a public link. Each browser gets an anonymous visitor id (for the AI limits only) |
 | (new) | "Download a PDF report" on the Summary page |
 
+## Two versions, one codebase
+
+| Site | Render service | Tool file | `TOOL_VERSION` | `APP_URL` |
+|---|---|---|---|---|
+| tamsamsom.peaknine.studio | `tamsamsom` | `tool/market-estimator.html` | (unset or `v1`) | `https://tamsamsom.peaknine.studio` |
+| tamsamsom2.onrender.com | `tamsamsom2` | `tool/market-estimator-v2.html` | `v2` | `https://tamsamsom2.onrender.com` |
+
+Both services deploy this repository; `TOOL_VERSION` decides which tool the build uses. Everything
+else (API key, database, limits) can be the same. With the same `DATABASE_URL`, both sites share
+one project list and one AI budget: a project made on one site shows up on the other, and the
+200-requests-a-day cap is for both together. Give v2 its own database if you want them separate.
+
 ## How it fits together
 
 - `tool/market-estimator.html` is the original tool, unchanged. `npm run build` writes `public/app.html`
@@ -48,6 +60,7 @@ Anthropic console as well: that is the real safety net.
 | `AI_DAILY_LIMIT_TOTAL` | AI requests per 24 hours, all visitors together | `200` |
 | `AI_DAILY_LIMIT` | AI requests per 24 hours, per visitor and per address | `100` |
 | `AI_MODEL`, `AI_MODEL_QUICK` | Optional, see above | |
+| `TOOL_VERSION` | Which tool this service shows: `v1` (default) or `v2` | `v2` |
 | `NODE_ENV` | `production` | |
 
 ## Deploy on Render

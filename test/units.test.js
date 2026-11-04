@@ -6,7 +6,7 @@ const { deepMerge, docParent, projectOf } = require("../server/docs");
 const { parseCookies, colorFor, limiter } = require("../server/visitor");
 const { parseJsonReply, requestFor, searchResults } = require("../server/ai");
 const { htmlToText, isPrivateIp, checkUrl } = require("../server/web");
-const { applyEdits, EDITS } = require("../scripts/build");
+const { applyEdits, toolFile, EDITS } = require("../scripts/build");
 
 test("deepMerge merges objects and replaces everything else, like the tool", () => {
   assert.deepEqual(deepMerge({ a: { b: 1, c: 2 }, d: [1, 2] }, { a: { c: 3 }, d: [9] }), { a: { b: 1, c: 3 }, d: [9] });
@@ -92,15 +92,25 @@ test("the server never reads internal addresses", async () => {
   await assert.rejects(checkUrl("http://user:pw@example.com/"), /login/);
 });
 
-test("the build edits fit the real tool exactly once, and stop loudly when they don't", () => {
-  const src = fs.readFileSync(path.join(__dirname, "..", "tool", "market-estimator.html"), "utf8");
-  const out = applyEdits(src);
-  assert.match(out, /<script src="\/assets\/runtime.js"><\/script>\n<script src="\/assets\/vendor\/jszip.min.js">/);
-  assert.doesNotMatch(out, /cdnjs\.cloudflare\.com/);
-  assert.match(out, /data-act="exportpdf"/);
-  assert.match(out, /case 'exportpdf'/);
-  assert.doesNotMatch(out, /Open the tool on claude\.ai or in the Claude app/);
-  assert.ok(out.indexOf("/assets/runtime-after.js") > out.lastIndexOf("init();"));
-  assert.throws(() => applyEdits(src.replace("    case 'exportfresh': exportFresh(); break;", "")), /PDF button action/);
-  assert.equal(EDITS.length, 10);
+for (const version of ["v1", "v2"]) {
+  test(`the build edits fit tool ${version} exactly once, and stop loudly when they don't`, () => {
+    const src = fs.readFileSync(toolFile(version), "utf8");
+    const out = applyEdits(src);
+    assert.match(out, /<script src="\/assets\/runtime.js"><\/script>\n<script src="\/assets\/vendor\/jszip.min.js">/);
+    assert.doesNotMatch(out, /cdnjs\.cloudflare\.com/);
+    assert.match(out, /data-act="exportpdf"/);
+    assert.match(out, /case 'exportpdf'/);
+    assert.doesNotMatch(out, /Open the tool on claude\.ai or in the Claude app/);
+    assert.ok(out.indexOf("/assets/runtime-after.js") > out.lastIndexOf("init();"));
+    // The PDF card sits in the right-hand column, before the block-by-block section.
+    assert.ok(out.indexOf('data-act="exportpdf"') < out.indexOf("The computation, block by block"));
+    assert.throws(() => applyEdits(src.replace("    case 'exportfresh': exportFresh(); break;", "")), /PDF button action/);
+    assert.equal(EDITS.length, 10);
+  });
+}
+
+test("TOOL_VERSION picks the tool file; unknown versions stop the build", () => {
+  assert.match(toolFile(undefined), /tool\/market-estimator\.html$/);
+  assert.match(toolFile("V2"), /tool\/market-estimator-v2\.html$/);
+  assert.throws(() => toolFile("v3"), /Unknown TOOL_VERSION "v3"/);
 });
