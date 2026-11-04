@@ -6,7 +6,7 @@
  *   sample     AI answers (JSON) on Peak Nine's API key
  *   mcp        reports that "web research" is available (the calls are wired in runtime-after.js)
  *   downloads  a normal browser download
- *   user       the signed-in person
+ *   user       the visitor (anonymous; the site has no sign-in)
  *   room       who else is in the project
  * Load this BEFORE the tool's own script.
  */
@@ -32,10 +32,6 @@
       json = await res.json();
     } catch {
       /* empty body */
-    }
-    if (res.status === 401) {
-      window.location.href = "/login";
-      throw { code: "session_expired", message: "Sign in again." };
     }
     if (!res.ok) {
       const e = (json && json.error) || { code: "unavailable", message: `HTTP ${res.status}` };

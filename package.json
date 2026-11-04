@@ -15,7 +15,6 @@
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.9",
     "jszip": "^3.10.1",
-    "nodemailer": "^10.3.1",
     "pdfjs-dist": "^3.11.174",
     "pg": "^8.23.1"
   },

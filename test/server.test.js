@@ -1,68 +1,35 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { startApp, browser, signIn, fakeAnthropic, textReply } = require("./helpers");
+const { startApp, browser, fakeAnthropic, textReply } = require("./helpers");
 
-test("sign-in by email link, sessions and sign-out", async (t) => {
+test("anyone with the link gets the tool, with an anonymous visitor cookie and no indexing", async (t) => {
   const app = await startApp();
   t.after(app.close);
   const go = browser(app.base);
-
-  // Not signed in: the tool redirects to /login, the API says 401.
-  assert.equal((await go("/")).headers.get("location"), "/login");
-  assert.equal((await go.json("GET", "/api/me")).status, 401);
-  assert.equal((await go("/login")).status, 200);
-
-  // An address that isn't allowed gets the same answer, but no mail.
-  assert.deepEqual((await go.json("POST", "/auth/request", { email: "stranger@gmail.com" })).json, { ok: true });
-  assert.equal(app.mails.length, 0);
-
-  // The link opens a page with a button; only the POST signs in.
-  await go.json("POST", "/auth/request", { email: "Niels@peaknine.studio" });
-  const link = app.mails[0].link;
-  assert.match(link, /^http:\/\/localhost\/auth\/verify\?token=/);
-  const token = new URL(link).searchParams.get("token");
-  const pageRes = await go(`/auth/verify?token=${token}`);
-  const pageHtml = await pageRes.text();
-  assert.match(pageHtml, new RegExp(`value="${token}"`));
-  // "no-referrer" would make browsers send Origin: null on the form post, which the server refuses.
-  assert.match(pageHtml, /<meta name="referrer" content="same-origin">/);
-  assert.equal((await go.json("GET", "/api/me")).status, 401);
-
-  const post = () => go("/auth/verify", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "token=" + token });
-  const first = await post();
-  assert.equal(first.status, 303);
-  assert.equal(first.headers.get("location"), "/");
-  assert.match(first.headers.get("set-cookie"), /tss_session=.+; Path=\/; HttpOnly; SameSite=Lax/);
-  // A link works once.
-  const again = await browser(app.base)("/auth/verify", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "token=" + token });
-  assert.equal(again.headers.get("location"), "/login?expired=1");
-
-  const me = await go.json("GET", "/api/me");
-  assert.equal(me.status, 200);
-  assert.deepEqual({ id: me.json.id, name: me.json.name, role: me.json.role }, { id: "niels@peaknine.studio", name: "Niels", role: "team" });
 
   const page = await go("/");
-  const html = await page.text();
-  assert.match(html, /\/assets\/runtime\.js/);
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /\/assets\/runtime\.js/);
+  assert.match(page.headers.get("set-cookie"), /^tss_visitor=[A-Za-z0-9_-]{16,}; Path=\/; HttpOnly; SameSite=Lax; Max-Age=\d+$/);
+  assert.equal(page.headers.get("x-robots-tag"), "noindex, nofollow");
+  assert.equal(await (await go("/robots.txt")).text(), "User-agent: *\nDisallow: /\n");
 
-  await go("/auth/logout", { method: "POST" });
-  assert.equal((await go.json("GET", "/api/me")).status, 401);
-});
+  // The same visitor keeps the same id; a new browser gets a new one.
+  const me1 = (await go.json("GET", "/api/me")).json;
+  const me2 = (await go.json("GET", "/api/me")).json;
+  const other = (await browser(app.base).json("GET", "/api/me")).json;
+  assert.equal(me1.id, me2.id);
+  assert.notEqual(me1.id, other.id);
+  assert.equal(me1.name, "Visitor");
 
-test("too many link requests are slowed down", async (t) => {
-  const app = await startApp();
-  t.after(app.close);
-  const go = browser(app.base);
-  for (let i = 0; i < 5; i++) assert.equal((await go.json("POST", "/auth/request", { email: "niels@peaknine.studio" })).status, 200);
-  const r = await go.json("POST", "/auth/request", { email: "niels@peaknine.studio" });
-  assert.equal(r.status, 400);
-  assert.match(r.json.error, /Too many/);
+  assert.equal((await go("/login")).status, 404);
+  assert.equal((await go("/assets/vendor/jspdf.umd.min.js")).status, 200);
 });
 
 test("documents: set, merge-update, list in order, and the update-then-set fallback", async (t) => {
   const app = await startApp();
   t.after(app.close);
-  const go = await signIn(app, browser(app.base), "niels@peaknine.studio");
+  const go = browser(app.base);
 
   assert.equal((await go.json("PUT", "/api/doc", { path: "projects/p1", data: { id: "p1", name: "Bikes", updatedAt: 1 }, mode: "set" })).status, 200);
   await go.json("PUT", "/api/doc", { path: "projects/p2", data: { id: "p2", name: "Food", updatedAt: 5 }, mode: "set" });
@@ -77,54 +44,31 @@ test("documents: set, merge-update, list in order, and the update-then-set fallb
   assert.equal(miss.status, 400);
   assert.equal(miss.json.error.code, "invalid_argument");
 
-  const list = await go.json("GET", "/api/collection?path=projects&orderBy=updatedAt&dir=desc&limit=100");
+  // One shared list: a different visitor sees both projects.
+  const list = await browser(app.base).json("GET", "/api/collection?path=projects&orderBy=updatedAt&dir=desc&limit=100");
   assert.deepEqual(list.json.docs.map((d) => d.id), ["p2", "p1"]);
 
   // Paths outside the projects tree, or malformed ones, are refused.
   assert.equal((await go.json("PUT", "/api/doc", { path: "users/x", data: {}, mode: "set" })).status, 403);
   assert.equal((await go.json("GET", "/api/doc?path=projects/../x")).status, 400);
+  assert.equal((await go.json("PUT", "/api/doc", { path: "projects/big", data: { x: "a".repeat(1000 * 1024) }, mode: "set" })).status, 400);
 });
 
-test("a client (guest) only sees and changes their own projects", async (t) => {
-  const app = await startApp();
+test("too many saves from one address in a minute are slowed down", async (t) => {
+  const app = await startApp({ env: { WRITE_LIMIT_PER_MINUTE: "3" } });
   t.after(app.close);
-  const team = await signIn(app, browser(app.base), "jonas@peaknine.studio");
-  const guest = await signIn(app, browser(app.base), "client@acme.org");
-  const other = await signIn(app, browser(app.base), "other@client.org");
-
-  await team.json("PUT", "/api/doc", { path: "projects/team1", data: { id: "team1", name: "Internal", updatedAt: 1 }, mode: "set" });
-
-  // The guest creates a project; createdBy and members are set by the server, not the browser.
-  await guest.json("PUT", "/api/doc", { path: "projects/g1", data: { id: "g1", name: "Acme", updatedAt: 2, createdBy: "someone@else", members: ["x@y.z"] }, mode: "set" });
-  const g1 = await team.json("GET", "/api/doc?path=projects/g1");
-  assert.equal(g1.json.data.createdBy, "client@acme.org");
-  assert.deepEqual(g1.json.data.members, []);
-  await guest.json("PUT", "/api/doc", { path: "projects/g1/parts/intro", data: { answers: { problem: "x" } }, mode: "set" });
-
-  // The guest's list only holds their own project; the team sees both.
-  assert.deepEqual((await guest.json("GET", "/api/collection?path=projects")).json.docs.map((d) => d.id), ["g1"]);
-  assert.deepEqual((await team.json("GET", "/api/collection?path=projects&orderBy=updatedAt&dir=desc")).json.docs.map((d) => d.id), ["g1", "team1"]);
-
-  // No reading or writing someone else's project, and no handing yourself access.
-  assert.equal((await guest.json("GET", "/api/doc?path=projects/team1")).status, 403);
-  assert.equal((await guest.json("PUT", "/api/doc", { path: "projects/team1/parts/intro", data: { a: 1 }, mode: "set" })).status, 403);
-  assert.equal((await other.json("GET", "/api/doc?path=projects/g1/parts/intro")).status, 403);
-  await guest.json("PUT", "/api/doc", { path: "projects/g1", data: { members: ["other@client.org"], name: "Acme 2" }, mode: "update" });
-  const after = (await team.json("GET", "/api/doc?path=projects/g1")).json.data;
-  assert.equal(after.name, "Acme 2");
-  assert.deepEqual(after.members, []);
-
-  // The team adds the other client as a member; now they can read it.
-  await team.json("PUT", "/api/doc", { path: "projects/g1", data: { members: ["other@client.org"] }, mode: "update" });
-  await new Promise((r) => setTimeout(r, 10));
-  assert.equal((await other.json("GET", "/api/doc?path=projects/g1/parts/intro")).status, 200);
+  const go = browser(app.base);
+  for (let i = 0; i < 3; i++) assert.equal((await go.json("PUT", "/api/doc", { path: `projects/q${i}`, data: { i }, mode: "set" })).status, 200);
+  const r = await go.json("PUT", "/api/doc", { path: "projects/q9", data: {}, mode: "set" });
+  assert.equal(r.status, 429);
+  assert.equal(r.json.error.code, "rate_limited");
 });
 
-test("live sync: changes stream to people who may see them", async (t) => {
+test("live sync: changes stream to every open browser, presence per project", async (t) => {
   const app = await startApp();
   t.after(app.close);
-  const team = await signIn(app, browser(app.base), "niels@peaknine.studio");
-  const guest = await signIn(app, browser(app.base), "client@acme.org");
+  const a = browser(app.base);
+  const b = browser(app.base);
 
   const listen = async (go) => {
     const res = await go("/api/events");
@@ -147,28 +91,33 @@ test("live sync: changes stream to people who may see them", async (t) => {
     })();
     return { events, stop: () => reader.cancel().catch(() => {}) };
   };
-  const teamStream = await listen(team);
-  const guestStream = await listen(guest);
-  t.after(() => (teamStream.stop(), guestStream.stop()));
+  const sa = await listen(a);
+  const sb = await listen(b);
+  t.after(() => (sa.stop(), sb.stop()));
 
-  await team.json("PUT", "/api/doc", { path: "projects/p9", data: { id: "p9", updatedAt: 1 }, mode: "set" });
-  await team.json("PUT", "/api/doc", { path: "projects/p9/markets/TAM", data: { a: 1 }, mode: "set" });
+  await a.json("PUT", "/api/doc", { path: "projects/p9", data: { id: "p9", updatedAt: 1 }, mode: "set" });
+  await a.json("PUT", "/api/doc", { path: "projects/p9/markets/TAM", data: { a: 1 }, mode: "set" });
   await new Promise((r) => setTimeout(r, 100));
-  assert.deepEqual(teamStream.events.filter((e) => e.type === "doc").map((e) => e.path), ["projects/p9", "projects/p9/markets/TAM"]);
-  assert.equal(teamStream.events[1].parent, "projects/p9/markets");
-  assert.deepEqual(guestStream.events.filter((e) => e.type === "doc"), []);
+  assert.deepEqual(sb.events.filter((e) => e.type === "doc").map((e) => e.path), ["projects/p9", "projects/p9/markets/TAM"]);
+  assert.equal(sb.events[1].parent, "projects/p9/markets");
 
-  // Presence: the guest can't join a project room they can't see; the team can.
-  assert.equal((await guest.json("POST", "/api/room", { room: "p-p9", presence: { name: "x" } })).status, 403);
-  assert.equal((await team.json("POST", "/api/room", { room: "p-p9", presence: { view: "compute" } })).status, 200);
+  // Both open project p9; each sees the other, not themselves.
+  await a.json("POST", "/api/room", { room: "p-p9", presence: { view: "compute" } });
+  await b.json("POST", "/api/room", { room: "p-p9", presence: { view: "summary" } });
+  await new Promise((r) => setTimeout(r, 100));
+  const lastPeers = (s) => s.events.filter((e) => e.type === "peers").pop();
+  assert.deepEqual(lastPeers(sa).peers.map((p) => p.presence.view), ["summary"]);
+  assert.deepEqual(lastPeers(sb).peers.map((p) => p.presence.view), ["compute"]);
+  assert.equal(lastPeers(sa).peers[0].presence.name, "Visitor");
+  assert.equal((await a.json("POST", "/api/room", { room: "../x", presence: {} })).status, 400);
 });
 
-test("AI: models per level, refusals, broken JSON and the daily limit", async (t) => {
+test("AI: models per level, refusals, broken JSON", async (t) => {
   let next = () => textReply('{"ideas":["a","b"]}');
   const client = fakeAnthropic((req) => next(req));
-  const app = await startApp({ aiClient: client, env: { AI_DAILY_LIMIT: "3" } });
+  const app = await startApp({ aiClient: client });
   t.after(app.close);
-  const go = await signIn(app, browser(app.base), "niels@peaknine.studio");
+  const go = browser(app.base);
 
   const r1 = await go.json("POST", "/api/ai/json", { prompt: "Give ideas. Reply with JSON only.", tier: "default" });
   assert.deepEqual(r1.json, { result: { ideas: ["a", "b"] } });
@@ -186,22 +135,32 @@ test("AI: models per level, refusals, broken JSON and the daily limit", async (t
   assert.equal(bad.json.error.code, "invalid_json");
   assert.equal(bad.json.error.text, "Sorry, that is not JSON");
 
-  next = () => textReply("{}");
-  const limited = await go.json("POST", "/api/ai/json", { prompt: "x" });
-  assert.equal(limited.json.error.code, "rate_limited");
-  assert.match(limited.json.error.message, /Daily AI limit/);
+  next = () => ({ model: "fake", stop_reason: "refusal", content: [], usage: {} });
+  assert.equal((await go.json("POST", "/api/ai/json", { prompt: "x" })).json.error.code, "refused");
 
-  const usage = await app.pool.query("SELECT kind, email FROM ai_usage ORDER BY id");
-  assert.deepEqual(usage.rows.map((r) => r.kind), ["json", "json-quick", "json"]);
+  const usage = await app.pool.query("SELECT kind FROM ai_usage ORDER BY id");
+  assert.deepEqual(usage.rows.map((r) => r.kind), ["json", "json-quick", "json", "json"]);
 });
 
-test("AI: a refused request comes back as 'refused'", async (t) => {
-  const client = fakeAnthropic(() => ({ model: "fake", stop_reason: "refusal", content: [], usage: {} }));
-  const app = await startApp({ aiClient: client });
+test("AI: the daily caps, per visitor and for the whole site", async (t) => {
+  const app = await startApp({ env: { AI_DAILY_LIMIT_TOTAL: "3", AI_DAILY_LIMIT: "2" } });
   t.after(app.close);
-  const go = await signIn(app, browser(app.base), "niels@peaknine.studio");
-  const r = await go.json("POST", "/api/ai/json", { prompt: "x" });
-  assert.equal(r.json.error.code, "refused");
+  const a = browser(app.base);
+  const b = browser(app.base);
+
+  assert.equal((await a.json("POST", "/api/ai/json", { prompt: "1" })).status, 200);
+  assert.equal((await a.json("POST", "/api/ai/json", { prompt: "2" })).status, 200);
+  const own = await a.json("POST", "/api/ai/json", { prompt: "3" });
+  assert.equal(own.json.error.code, "rate_limited");
+  assert.match(own.json.error.message, /today's AI limit \(2 requests\)/);
+
+  // Same network address, new cookie: the per-address cap still applies.
+  assert.equal((await b.json("POST", "/api/ai/json", { prompt: "4" })).json.error.code, "rate_limited");
+
+  // Usage from elsewhere counts towards the site total.
+  await app.pool.query("INSERT INTO ai_usage (visitor, ip, kind, model, created_at) VALUES ('x', '10.9.9.9', 'json', 'm', $1)", [Date.now()]);
+  const site = await a.json("POST", "/api/web/search", { q: "anything" });
+  assert.match(site.json.error.message, /today's limit for this site \(3 requests\)/);
 });
 
 test("web research: search through Anthropic, read pages on the server", async (t) => {
@@ -223,15 +182,14 @@ test("web research: search through Anthropic, read pages on the server", async (
   };
   const webFetch = async (url) => (pages[url] ? pages[url]() : new Response("nope", { status: 404, headers: { "content-type": "text/html" } }));
   const lookup = async (host) => [{ address: host === "10.0.0.1" ? "10.0.0.1" : "93.184.216.34" }];
-  const app = await startApp({ aiClient: client, webFetch, lookup });
+  const app = await startApp({ aiClient: client, webFetch, lookup, env: { READ_LIMIT_PER_HOUR: "5" } });
   t.after(app.close);
-  const go = await signIn(app, browser(app.base), "sankhya@peaknine.studio");
+  const go = browser(app.base);
 
   const s = await go.json("POST", "/api/web/search", { q: "number of bikes Netherlands" });
   assert.deepEqual(s.json.results, [{ title: "Bikes in NL", url: "https://cbs.example.nl/bikes", domain: "cbs.example.nl", snippet: "", pdf: false }]);
   assert.match(client.calls[0].messages[0].content, /Query: number of bikes Netherlands/);
-  const usage = await app.pool.query("SELECT searches FROM ai_usage");
-  assert.equal(usage.rows[0].searches, 1);
+  assert.equal((await app.pool.query("SELECT searches FROM ai_usage")).rows[0].searches, 1);
 
   const page = await go.json("POST", "/api/web/read", { url: "https://cbs.example.nl/bikes" });
   assert.deepEqual(page.json, { title: "Bikes in NL", text: "There are 23 million bikes in the Netherlands." });
@@ -240,28 +198,24 @@ test("web research: search through Anthropic, read pages on the server", async (
   assert.equal((await go.json("POST", "/api/web/read", { url: "https://moved.example.org/" })).json.error.code, "tool_error");
   assert.match((await go.json("POST", "/api/web/read", { url: "http://127.0.0.1:80/" })).json.error.message, /not reachable/);
   assert.equal((await go.json("POST", "/api/web/read", { url: "https://cbs.example.nl/missing" })).json.error.code, "bad_page");
+  // Fifth read this hour is the last one allowed.
+  await go.json("POST", "/api/web/read", { url: "https://cbs.example.nl/bikes" });
+  assert.equal((await go.json("POST", "/api/web/read", { url: "https://cbs.example.nl/bikes" })).status, 429);
 });
 
 test("requests from another site are refused", async (t) => {
   const app = await startApp();
   t.after(app.close);
-  const go = await signIn(app, browser(app.base), "niels@peaknine.studio");
+  const go = browser(app.base);
   const r = await go("/api/doc", { method: "PUT", headers: { "content-type": "application/json", origin: "https://evil.example" }, body: JSON.stringify({ path: "projects/x", data: {}, mode: "set" }) });
   assert.equal(r.status, 403);
 });
 
 test("without an API key the site works and the AI says it isn't set up", async (t) => {
-  const { createApp } = require("../server/app");
-  const { memoryPool } = require("./helpers");
-  const pool = await memoryPool();
-  const mails = [];
-  const app = createApp({ pool, env: { APP_URL: "http://localhost", ALLOWED_DOMAINS: "peaknine.studio" }, mailer: { send: async (m) => mails.push(m) } });
-  const server = await new Promise((r) => {
-    const s = app.listen(0, () => r(s));
-  });
-  t.after(() => new Promise((r) => (server.closeAllConnections(), server.close(r))));
-  const go = await signIn({ mails }, browser(`http://127.0.0.1:${server.address().port}`), "niels@peaknine.studio");
+  const app = await startApp({ aiClient: null, env: { ANTHROPIC_API_KEY: "" } });
+  t.after(app.close);
+  const go = browser(app.base);
   const r = await go.json("POST", "/api/ai/json", { prompt: "x" });
   assert.equal(r.json.error.code, "sampling_disabled");
-  assert.equal((await go.json("GET", "/api/me")).status, 200);
+  assert.equal((await go("/")).status, 200);
 });

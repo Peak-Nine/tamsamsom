@@ -1,6 +1,6 @@
 /**
- * Local preview without Postgres or email: an in-memory database (gone when you stop it) and
- * sign-in links printed in this terminal. The AI works when ANTHROPIC_API_KEY is set.
+ * Local preview without Postgres: an in-memory database (gone when you stop it).
+ * The AI works when ANTHROPIC_API_KEY is set.
  *
  *   npm run build && node scripts/dev.js     then open http://localhost:3000
  */
@@ -17,10 +17,9 @@ async function main() {
     ...process.env,
     NODE_ENV: "development",
     APP_URL: process.env.APP_URL || `http://localhost:${port}`,
-    ALLOWED_DOMAINS: process.env.ALLOWED_DOMAINS || "peaknine.studio",
   };
   const app = createApp({ pool, env });
-  app.listen(port, () => console.log(`Preview on ${env.APP_URL} (in-memory database; sign-in links appear below)`));
+  app.listen(port, () => console.log(`Preview on ${env.APP_URL} (in-memory database)`));
 }
 
 main().catch((e) => {

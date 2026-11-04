@@ -115,7 +115,7 @@
       doc.setFont("helvetica", "bold").setFontSize(20).setTextColor(...INK);
       doc.text(clean(proj), M, y + 6);
       y += 12;
-      para(`Market sizing report  |  ${new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}${S.me && S.me.name ? "  |  prepared by " + S.me.name : ""}`, {
+      para(`Market sizing report  |  ${new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}${S.me && S.me.name && S.me.name !== "Visitor" ? "  |  prepared by " + S.me.name : ""}`, {
         size: 9,
         color: MUTED,
         gap: 6,

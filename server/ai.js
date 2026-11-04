@@ -4,7 +4,9 @@
  *   - "default": the thinking work (definitions, formulas, extracting figures)  -> AI_MODEL
  *   - "quick":   short ideas and plans                                          -> AI_MODEL_QUICK
  * Errors come back with the same codes the tool already understands (rate_limited, refused, …).
- * Every call is logged in ai_usage, and each person has a daily cap (AI_DAILY_LIMIT).
+ * The site is public, so every call is logged in ai_usage and capped over the last 24 hours:
+ *   AI_DAILY_LIMIT_TOTAL  for all visitors together (default 200)
+ *   AI_DAILY_LIMIT        per visitor and per network address (default 100)
  */
 const Anthropic = require("@anthropic-ai/sdk");
 
@@ -104,22 +106,30 @@ function createAi({ pool, client, env = process.env }) {
     return anthropic;
   };
   const models = modelsFrom(env);
-  const dailyLimit = Number(env.AI_DAILY_LIMIT || 300);
+  const totalLimit = Number(env.AI_DAILY_LIMIT_TOTAL || 200);
+  const perVisitorLimit = Number(env.AI_DAILY_LIMIT || 100);
 
-  async function checkBudget(email) {
+  async function checkBudget(v) {
     const since = Date.now() - 24 * 60 * 60 * 1000;
-    const r = await pool.query("SELECT COUNT(*)::int AS n FROM ai_usage WHERE email = $1 AND created_at > $2", [email, since]);
-    if ((r.rows[0] && r.rows[0].n) >= dailyLimit) {
-      throw new AiError("rate_limited", `Daily AI limit reached (${dailyLimit} requests per person per day).`);
+    const count = async (where, args) => {
+      const r = await pool.query(`SELECT COUNT(*)::int AS n FROM ai_usage WHERE created_at > $1${where}`, [since, ...args]);
+      return (r.rows[0] && r.rows[0].n) || 0;
+    };
+    if ((await count("", [])) >= totalLimit) {
+      throw new AiError("rate_limited", `The AI has reached today's limit for this site (${totalLimit} requests). Try again tomorrow.`);
+    }
+    if ((await count(" AND visitor = $2", [v.id])) >= perVisitorLimit || (await count(" AND ip = $2", [v.ip])) >= perVisitorLimit) {
+      throw new AiError("rate_limited", `You've reached today's AI limit (${perVisitorLimit} requests). Try again tomorrow.`);
     }
   }
 
-  async function log(email, kind, msg) {
+  async function log(v, kind, msg) {
     const u = (msg && msg.usage) || {};
     const searches = (u.server_tool_use && u.server_tool_use.web_search_requests) || 0;
     await pool
-      .query("INSERT INTO ai_usage (email, kind, model, input_tokens, output_tokens, searches, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)", [
-        email,
+      .query("INSERT INTO ai_usage (visitor, ip, kind, model, input_tokens, output_tokens, searches, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", [
+        v.id,
+        v.ip,
         kind,
         (msg && msg.model) || "?",
         (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0),
@@ -137,10 +147,10 @@ function createAi({ pool, client, env = process.env }) {
   }
 
   /** The tool's sample.json(prompt, {modelTier}) on the server. */
-  async function json(user, prompt, { tier = "default", signal } = {}) {
+  async function json(v, prompt, { tier = "default", signal } = {}) {
     if (typeof prompt !== "string" || !prompt.trim()) throw new AiError("empty_completion", "empty prompt");
     if (prompt.length > 200000) throw new AiError("prompt_too_large");
-    await checkBudget(user.email);
+    await checkBudget(v);
     const quick = tier === "quick";
     let msg;
     try {
@@ -148,16 +158,16 @@ function createAi({ pool, client, env = process.env }) {
     } catch (e) {
       throw mapError(e);
     }
-    await log(user.email, quick ? "json-quick" : "json", msg);
+    await log(v, quick ? "json-quick" : "json", msg);
     if (msg.stop_reason === "refusal") throw new AiError("refused");
     return parseJsonReply(textOf(msg));
   }
 
   /** One web search through Anthropic's web search tool; returns the result list. */
-  async function search(user, query, { signal } = {}) {
+  async function search(v, query, { signal } = {}) {
     const q = String(query || "").trim().slice(0, 300);
     if (!q) return [];
-    await checkBudget(user.email);
+    await checkBudget(v);
     const req = requestFor(
       models.model,
       `Run exactly one web search for this query, then reply with the single word "done".\n\nQuery: ${q}`,
@@ -169,7 +179,7 @@ function createAi({ pool, client, env = process.env }) {
     } catch (e) {
       throw mapError(e);
     }
-    await log(user.email, "search", msg);
+    await log(v, "search", msg);
     return searchResults(msg);
   }
 

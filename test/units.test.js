@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
 const { deepMerge, docParent, projectOf } = require("../server/docs");
-const { roleOf, nameFromEmail, parseCookies } = require("../server/auth");
+const { parseCookies, colorFor, limiter } = require("../server/visitor");
 const { parseJsonReply, requestFor, searchResults } = require("../server/ai");
 const { htmlToText, isPrivateIp, checkUrl } = require("../server/web");
 const { applyEdits, EDITS } = require("../scripts/build");
@@ -22,15 +22,11 @@ test("paths: documents vs collections, and the project they belong to", () => {
   assert.equal(projectOf("users/x"), null);
 });
 
-test("who may sign in", () => {
-  const cfg = { domains: ["peaknine.studio"], emails: ["client@acme.org"] };
-  assert.equal(roleOf("Niels@PeakNine.studio", cfg), "team");
-  assert.equal(roleOf("client@acme.org", cfg), "guest");
-  assert.equal(roleOf("someone@acme.org", cfg), null);
-  assert.equal(roleOf("x@peaknine.studio.evil.com", cfg), null);
-  assert.equal(roleOf("not an email", cfg), null);
-  assert.equal(nameFromEmail("sankhya.g@peaknine.studio"), "Sankhya");
-  assert.deepEqual(parseCookies("a=1; tss_session=abc%3D"), { a: "1", tss_session: "abc=" });
+test("visitor helpers: cookies, a stable colour, and the limiter", () => {
+  assert.deepEqual(parseCookies("a=1; tss_visitor=abc%3D"), { a: "1", tss_visitor: "abc=" });
+  assert.equal(colorFor("v1"), colorFor("v1"));
+  const ok = limiter(2, 60000);
+  assert.deepEqual([ok("ip"), ok("ip"), ok("ip"), ok("other")], [true, true, false, true]);
 });
 
 test("AI replies are parsed even with fences or text around them", () => {

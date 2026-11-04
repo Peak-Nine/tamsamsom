@@ -3,7 +3,7 @@ const { makePool, migrate } = require("./db");
 const { createApp } = require("./app");
 
 async function main() {
-  for (const k of ["DATABASE_URL", "ANTHROPIC_API_KEY", "APP_URL", "ALLOWED_DOMAINS"]) {
+  for (const k of ["DATABASE_URL", "ANTHROPIC_API_KEY", "APP_URL"]) {
     if (!process.env[k]) console.warn(`[start] ${k} is not set`);
   }
   const pool = makePool();
