@@ -95,7 +95,7 @@ test("the server never reads internal addresses", async () => {
 for (const version of ["v1", "v2"]) {
   test(`the build edits fit tool ${version} exactly once, and stop loudly when they don't`, () => {
     const src = fs.readFileSync(toolFile(version), "utf8");
-    const out = applyEdits(src);
+    const out = applyEdits(src, version);
     assert.match(out, /<script src="\/assets\/runtime.js"><\/script>\n<script src="\/assets\/vendor\/jszip.min.js">/);
     assert.doesNotMatch(out, /cdnjs\.cloudflare\.com/);
     assert.match(out, /data-act="exportpdf"/);
@@ -104,8 +104,14 @@ for (const version of ["v1", "v2"]) {
     assert.ok(out.indexOf("/assets/runtime-after.js") > out.lastIndexOf("init();"));
     // The PDF card sits in the right-hand column, before the block-by-block section.
     assert.ok(out.indexOf('data-act="exportpdf"') < out.indexOf("The computation, block by block"));
-    assert.throws(() => applyEdits(src.replace("    case 'exportfresh': exportFresh(); break;", "")), /PDF button action/);
-    assert.equal(EDITS.length, 10);
+    assert.throws(() => applyEdits(src.replace("    case 'exportfresh': exportFresh(); break;", ""), version), /PDF button action/);
+    assert.equal(EDITS.length, 11);
+    if (version === "v2") {
+      // The Circucare demo is built into v2; on the shared list its button must stay visible.
+      assert.match(out, /data-act="loaddemo"/);
+      assert.match(out, /const hasDemo = \(\) => false;/);
+      assert.match(out, /window\.ME_DEMO/);
+    }
   });
 }
 

@@ -81,15 +81,25 @@ const EDITS = [
     replace: "unavailable: 'The AI could not be reached. Check your connection and try again.',",
   },
   {
+    // v2 hides "Add the Circucare demo" once any demo copy exists. On claude.ai each person had
+    // their own list; here everyone shares one, so the first copy would hide the button for all.
+    // Keep it visible: each click makes a fresh copy for whoever clicked.
+    name: "demo button always available (shared project list)",
+    only: ["v2"],
+    find: "const hasDemo = () => S.projects.some(p => /^Circucare \\(demo\\)/.test(p.name || ''));",
+    replace: "const hasDemo = () => false; // shared list on the hosted site: every click makes a fresh copy",
+  },
+  {
     name: "research depth note",
     find: "uses more of your Claude usage.",
     replace: "uses more of the AI budget.",
   },
 ];
 
-function applyEdits(html, edits = EDITS) {
+function applyEdits(html, version = "v1", edits = EDITS) {
   let out = html;
   for (const e of edits) {
+    if (e.only && !e.only.includes(version)) continue;
     const n = out.split(e.find).length - 1;
     if (n !== 1) throw new Error(`Edit "${e.name}" matched ${n} times (expected exactly 1). Has the tool changed?`);
     out = out.replace(e.find, () => e.replace);
@@ -112,11 +122,12 @@ function copyVendor() {
 }
 
 if (require.main === module) {
-  const src = toolFile(process.env.TOOL_VERSION);
-  const html = applyEdits(fs.readFileSync(src, "utf8"));
+  const version = String(process.env.TOOL_VERSION || "v1").trim().toLowerCase();
+  const src = toolFile(version);
+  const html = applyEdits(fs.readFileSync(src, "utf8"), version);
   fs.writeFileSync(OUT, html);
   copyVendor();
-  console.log(`Built ${path.relative(ROOT, OUT)} from ${path.relative(ROOT, src)} (${EDITS.length} edits) and copied jsPDF.`);
+  console.log(`Built ${path.relative(ROOT, OUT)} from ${path.relative(ROOT, src)} (${EDITS.filter((e) => !e.only || e.only.includes(version)).length} edits) and copied jsPDF.`);
 }
 
 module.exports = { applyEdits, toolFile, EDITS };
