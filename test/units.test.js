@@ -1,0 +1,110 @@
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("fs");
+const path = require("path");
+const { deepMerge, docParent, projectOf } = require("../server/docs");
+const { roleOf, nameFromEmail, parseCookies } = require("../server/auth");
+const { parseJsonReply, requestFor, searchResults } = require("../server/ai");
+const { htmlToText, isPrivateIp, checkUrl } = require("../server/web");
+const { applyEdits, EDITS } = require("../scripts/build");
+
+test("deepMerge merges objects and replaces everything else, like the tool", () => {
+  assert.deepEqual(deepMerge({ a: { b: 1, c: 2 }, d: [1, 2] }, { a: { c: 3 }, d: [9] }), { a: { b: 1, c: 3 }, d: [9] });
+  assert.deepEqual(deepMerge({ a: 1 }, { a: null }), { a: null });
+});
+
+test("paths: documents vs collections, and the project they belong to", () => {
+  assert.equal(docParent("projects/p1"), "projects");
+  assert.equal(docParent("projects/p1/markets/TAM"), "projects/p1/markets");
+  assert.throws(() => docParent("projects"), /not a document/);
+  assert.throws(() => docParent("projects/../x"), /bad path/);
+  assert.equal(projectOf("projects/p1/parts/intro"), "p1");
+  assert.equal(projectOf("users/x"), null);
+});
+
+test("who may sign in", () => {
+  const cfg = { domains: ["peaknine.studio"], emails: ["client@acme.org"] };
+  assert.equal(roleOf("Niels@PeakNine.studio", cfg), "team");
+  assert.equal(roleOf("client@acme.org", cfg), "guest");
+  assert.equal(roleOf("someone@acme.org", cfg), null);
+  assert.equal(roleOf("x@peaknine.studio.evil.com", cfg), null);
+  assert.equal(roleOf("not an email", cfg), null);
+  assert.equal(nameFromEmail("sankhya.g@peaknine.studio"), "Sankhya");
+  assert.deepEqual(parseCookies("a=1; tss_session=abc%3D"), { a: "1", tss_session: "abc=" });
+});
+
+test("AI replies are parsed even with fences or text around them", () => {
+  assert.deepEqual(parseJsonReply('{"a":1}'), { a: 1 });
+  assert.deepEqual(parseJsonReply('```json\n{"a":1}\n```'), { a: 1 });
+  assert.deepEqual(parseJsonReply('Here you go: [1,2] done'), [1, 2]);
+  assert.throws(() => parseJsonReply(""), (e) => e.code === "empty_completion");
+  assert.throws(() => parseJsonReply("no json here"), (e) => e.code === "invalid_json" && e.text === "no json here");
+});
+
+test("model requests: effort is explicit, fallbacks only where the model takes them", () => {
+  const opus = requestFor("claude-opus-5-5", "hi");
+  assert.equal(opus.output_config.effort, "medium");
+  assert.equal(opus.fallbacks, "default");
+  assert.deepEqual(opus.betas, ["server-side-fallback-2026-07-01"]);
+  const haiku = requestFor("claude-haiku-5-5", "hi", { quick: true });
+  assert.equal(haiku.output_config.effort, "low");
+  assert.equal(haiku.fallbacks, undefined);
+  assert.equal(haiku.betas, undefined);
+  assert.equal("temperature" in opus, false);
+});
+
+test("web search results are read from the tool result blocks", () => {
+  const msg = {
+    content: [
+      { type: "server_tool_use", name: "web_search" },
+      {
+        type: "web_search_tool_result",
+        content: [
+          { type: "web_search_result", url: "https://www.example.org/report.pdf", title: "A report", encrypted_content: "x", page_age: null },
+          { type: "web_search_result", url: "https://stats.example.com/a", title: "Stats", encrypted_content: "x", page_age: null },
+        ],
+      },
+      { type: "text", text: "done" },
+    ],
+  };
+  assert.deepEqual(searchResults(msg), [
+    { title: "A report", url: "https://www.example.org/report.pdf", domain: "example.org", snippet: "", pdf: true },
+    { title: "Stats", url: "https://stats.example.com/a", domain: "stats.example.com", snippet: "", pdf: false },
+  ]);
+  assert.throws(() => searchResults({ content: [{ type: "web_search_tool_result", content: { type: "web_search_tool_result_error", error_code: "unavailable" } }] }), /unavailable/);
+});
+
+test("HTML becomes readable text without scripts or navigation", () => {
+  const { title, text } = htmlToText(
+    "<html><head><title>Market &amp; size</title><style>p{}</style></head><body><nav>Menu</nav><h1>Bikes</h1><p>Delft has 1&nbsp;200 bikes.<br>More&#8230;</p><script>x()</script><footer>©</footer></body></html>"
+  );
+  assert.equal(title, "Market & size");
+  assert.equal(text, "Bikes\nDelft has 1 200 bikes.\nMore…");
+  assert.equal(htmlToText("<title>T</title><p>Body</p>").text, "Body");
+});
+
+test("the server never reads internal addresses", async () => {
+  for (const ip of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fd00::1", "::ffff:127.0.0.1"]) {
+    assert.equal(isPrivateIp(ip), true, ip);
+  }
+  assert.equal(isPrivateIp("93.184.216.34"), false);
+  const lookupPrivate = async () => [{ address: "10.0.0.5" }];
+  await assert.rejects(checkUrl("http://intranet.example/", lookupPrivate), /not reachable/);
+  await assert.rejects(checkUrl("http://169.254.169.254/latest/meta-data"), /not reachable/);
+  await assert.rejects(checkUrl("file:///etc/passwd"), /only http/);
+  await assert.rejects(checkUrl("http://example.com:8080/"), /port/);
+  await assert.rejects(checkUrl("http://user:pw@example.com/"), /login/);
+});
+
+test("the build edits fit the real tool exactly once, and stop loudly when they don't", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "tool", "market-estimator.html"), "utf8");
+  const out = applyEdits(src);
+  assert.match(out, /<script src="\/assets\/runtime.js"><\/script>\n<script src="\/assets\/vendor\/jszip.min.js">/);
+  assert.doesNotMatch(out, /cdnjs\.cloudflare\.com/);
+  assert.match(out, /data-act="exportpdf"/);
+  assert.match(out, /case 'exportpdf'/);
+  assert.doesNotMatch(out, /Open the tool on claude\.ai or in the Claude app/);
+  assert.ok(out.indexOf("/assets/runtime-after.js") > out.lastIndexOf("init();"));
+  assert.throws(() => applyEdits(src.replace("    case 'exportfresh': exportFresh(); break;", "")), /PDF button action/);
+  assert.equal(EDITS.length, 10);
+});

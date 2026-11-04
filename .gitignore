@@ -1,0 +1,4 @@
+node_modules/
+public/app.html
+public/assets/vendor/
+.env

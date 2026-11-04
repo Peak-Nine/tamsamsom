@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · Market Estimator</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Funnel+Display:wght@400&family=Funnel+Sans:wght@400;600&display=swap">
+<style>
+  :root { --sand: #EFEFE8; --ink: #1E242C; --ink-3: #5E6268; --line: #DFDED1; --lime: #D7E23F; --card: #F7F7F3; }
+  @media (prefers-color-scheme: dark) { :root { --sand: #15191E; --ink: #EDEDE6; --ink-3: #A3A7AC; --line: #2C3238; --card: #1C2127; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--sand); color: var(--ink); font: 16px/1.5 "Funnel Sans", system-ui, sans-serif; padding: 16px; }
+  main { width: 100%; max-width: 400px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 32px 28px; }
+  h1 { font: 400 28px/1.15 "Funnel Display", system-ui, sans-serif; margin: 0 0 6px; }
+  p { margin: 0 0 18px; color: var(--ink-3); }
+  label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+  input { width: 100%; font: inherit; padding: 11px 13px; border-radius: 10px; border: 1px solid var(--line); background: var(--sand); color: var(--ink); }
+  input:focus { outline: 2px solid var(--lime); outline-offset: 1px; }
+  button { margin-top: 14px; width: 100%; font: inherit; font-weight: 600; padding: 11px; border: 0; border-radius: 10px; background: var(--ink); color: var(--sand); cursor: pointer; }
+  button[disabled] { opacity: .6; cursor: default; }
+  .msg { margin-top: 16px; font-size: 14px; }
+  .bar { width: 36px; height: 4px; background: var(--lime); border-radius: 2px; margin-bottom: 18px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="bar"></div>
+  <h1>Market Estimator</h1>
+  <p>Peak Nine’s tool to size your TAM, SAM and SOM. Sign in with your email: we send you a link, no password needed.</p>
+  <form id="f" novalidate>
+    <label for="email">Your email</label>
+    <input id="email" name="email" type="email" autocomplete="email" required placeholder="you@organisation.org">
+    <button id="go" type="submit">Email me a sign-in link</button>
+  </form>
+  <div class="msg" id="msg" role="status" aria-live="polite"></div>
+</main>
+<script>
+  const f = document.getElementById("f"), msg = document.getElementById("msg"), go = document.getElementById("go");
+  if (new URLSearchParams(location.search).get("expired")) msg.textContent = "That link has expired or was already used. Ask for a new one.";
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const email = document.getElementById("email").value.trim();
+    if (!email) { msg.textContent = "Type your email first."; return; }
+    go.disabled = true; msg.textContent = "Sending…";
+    try {
+      const r = await fetch("/auth/request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email }) });
+      const j = await r.json().catch(() => ({}));
+      msg.textContent = j.ok
+        ? "Check your inbox. If this email has access, a sign-in link is on its way (it works for 15 minutes). No email after a few minutes? Check your spam folder, or ask Peak Nine for access."
+        : (j.error || "That didn’t work. Try again.");
+    } catch { msg.textContent = "No connection. Try again."; }
+    go.disabled = false;
+  });
+</script>
+</body>
+</html>
